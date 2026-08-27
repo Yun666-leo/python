@@ -1,0 +1,52 @@
+system:
+  auto_detection: true
+  target_max_dim: 800
+image_processing:
+  denoise_strength: 3
+  clahe_clip_limit: 3.0
+  clahe_tile_size: 8
+  binarize_method: adaptive
+  adaptive_block_size: 11
+  adaptive_c: 2
+  morph_kernel_size: 3
+pin_detection:
+  min_pin_area: 100
+  max_pin_area: 5000
+  aspect_ratio_min: 1.0
+  aspect_ratio_max: 8.0
+  solidity_min: 0.6
+roi_extraction:
+  roi_padding: 20
+calibration:
+  pixel_per_mm: 0.048077
+  known_length_mm: null
+  known_length_px: null
+measurement:
+  nominal_pitch_mm: 2.5
+classification:
+  pitch_tolerance_mm: 0.1
+camera:
+  source: usb
+  device_index: 0
+  device_profiles:
+  - name: 默认USB摄像头
+    device_index: 0
+    resolution_width: 1920
+    resolution_height: 1080
+  - name: USB摄像头2
+    device_index: 1
+    resolution_width: 1280
+    resolution_height: 720
+  - name: USB摄像头3
+    device_index: 2
+    resolution_width: 640
+    resolution_height: 480
+  rtsp_url: ''
+  watch_folder: ''
+  resolution_width: 1920
+  resolution_height: 1080
+  exposure: -1
+  brightness: -1
+  contrast: -1
+  save_dir: D:/captures
+  auto_run_detection: true
