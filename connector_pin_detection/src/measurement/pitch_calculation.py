@@ -20,20 +20,7 @@ class PitchCalculator:
             dist_mm = self._to_mm(dist_px)
             pitches.append((p1.index, p2.index, round(dist_px, 2), round(dist_mm, 4)))
         return pitches
-
-    def calculate_all_distances(self, result: DetectionResult) -> np.ndarray:
-        """计算所有引脚之间的两两距离矩阵"""
-        n = len(result.pins)
-        if n == 0:
-            return np.array([])
-        centers = np.array([p.center for p in result.pins])
-        dist_matrix = np.zeros((n, n))
-        for i in range(n):
-            for j in range(i + 1, n):
-                d = np.linalg.norm(centers[i] - centers[j])
-                dist_matrix[i][j] = d
-                dist_matrix[j][i] = d
-        return dist_matrix
+
 
     def _to_mm(self, pixels: float) -> float:
         if self.pixel_per_mm is None:
