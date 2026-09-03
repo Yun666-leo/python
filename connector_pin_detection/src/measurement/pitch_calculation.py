@@ -21,6 +21,7 @@ class PitchCalculator:
             pitches.append((p1.index, p2.index, round(dist_px, 2), round(dist_mm, 4)))
         return pitches
 
+
     def _to_mm(self, pixels: float) -> float:
         if self.pixel_per_mm is None:
             return pixels
