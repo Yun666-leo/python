@@ -1,4 +1,12 @@
 """缺陷判定模块 - 支持缺引脚、引脚弯曲、多排引脚检测"""
+
+# 开发思路：接收引脚间距和引脚检测结果，统一完成质量判定。
+# 整体步骤：
+# 1. 创建结果对象，并整理多排引脚信息。
+# 2. 统计间距数据，检测缺引脚和弯曲引脚。
+# 3. 对照标称间距和公差，判断每段间距是否偏大或偏小。
+# 4. 按缺引脚、弯曲引脚、间距异常的优先级生成总体结论。
+# 5. 汇总缺陷数量，并通过结果对象或 to_dict() 输出检测结果。
 import numpy as np
 
 
@@ -15,15 +23,14 @@ class DefectType:
 class ClassificationResult:
     def __init__(self):
         self.overall_verdict   = DefectType.OK
-        self.pin_details       = []
-        self.pitch_stats       = {}
+        self.pin_details       = []  # 每项：(引脚1索引, 引脚2索引, 缺陷类型, 间距mm, 偏差mm)
+        self.pitch_stats       = {}  # {"mean": 2.0, "std": 0.01, "min": 1.99, "max": 2.01, "count": 2}
         self.message           = ""
-        self.missing_pins      = []
-        self.bent_pins         = []
-        self.row_info          = None
-        self.angle_stats       = {}
-        self.defect_counts     = {"合格": 0, "间距偏大": 0, "间距偏小": 0, "缺引脚": 0, "引脚弯曲": 0}
-        self.pin_angle_details = []
+        self.missing_pins      = []  # 存放疑似缺失引脚的索引
+        self.bent_pins         = []  # 每项：(引脚索引, 实际角度, 主方向角度)
+        self.row_info          = {}
+        self.angle_stats       = {}  # {"mean": 1.2, "std": 2.5, "min": -3.0, "max": 12.5, "dominant": 0.0}
+        self.defect_counts     = {"合格": 0, "间距偏大": 0, "间距偏小": 0, "缺引脚": 0, "引脚弯曲": 0}  
 
     def to_dict(self) -> dict:
         return {
@@ -37,7 +44,7 @@ class ClassificationResult:
                 for d in self.pin_details
             ],
             "missing_pins": self.missing_pins,
-            "bent_pins": [{"index": b[0], "angle": round(b[1], 2), "avg_angle": round(b[2], 2)} for b in self.bent_pins],
+            "bent_pins": [{"index": b[0], "angle": round(b[1], 2), "dominant_angle": round(b[2], 2)} for b in self.bent_pins],
             "row_info": self.row_info,
         }
 
@@ -50,10 +57,32 @@ class DefectClassifier:
         self.missing_pin_ratio    = self.config.get("missing_pin_ratio", 1.6)
         self.bent_angle_threshold = self.config.get("bent_angle_threshold", 8.0)
 
-    def classify(self, pitches: list, pins: list = None):
+    # 对输入的引脚间距和引脚点进行总判定，并返回统一结果对象
+    def classify(self, pitches: list, pins: list = None):#pitches=[ (引脚1索引, 引脚2索引, 像素距离, 毫米距离)]
         result = ClassificationResult()
+        self._attach_row_info(result, pins)# 统计多排引脚的分组情况，附加到结果中
 
-        # multi-row detection runs even with empty pitches
+        if not pitches:
+            result.overall_verdict = DefectType.UNKNOWN
+            result.message = "未检测到有效引脚间距"
+            return result
+
+        result.pitch_stats = self._build_pitch_stats(pitches)# 汇总所有引脚间距的均值、标准差和范围等统计信息
+        has_bent = self._detect_bent_pins(result, pins)# 检测哪些引脚角度明显偏离主流方向，判定为弯曲
+        result.missing_pins = self._detect_missing_pins(pitches)
+        has_missing = bool(result.missing_pins)
+
+        if self.nominal_pitch is not None:
+            self._evaluate_pitches(pitches, result)
+        elif not result.message:
+            result.message = "未设置标称间距，仅输出测量值"
+
+        result.overall_verdict, result.message = self._build_verdict(result, has_missing, has_bent)
+        self._update_defect_counts(result)
+        return result
+
+    # 统计多排引脚的分组情况，附加到结果中
+    def _attach_row_info(self, result, pins):
         if pins and len(pins) >= 4:
             rows = self._cluster_rows(pins)
             if len(rows) > 1:
@@ -63,13 +92,10 @@ class DefectClassifier:
                     ri["row" + str(rid) + "_pins"] = [p.index for p in pl]
                 result.row_info = ri
 
-        if not pitches:
-            result.overall_verdict = DefectType.UNKNOWN
-            result.message = "未检测到有效引脚间距"
-            return result
-
+    # 汇总所有引脚间距的均值、标准差和范围等统计信息
+    def _build_pitch_stats(self, pitches):
         pitch_values = [p[3] for p in pitches]
-        result.pitch_stats = {
+        return {
             "mean": round(float(np.mean(pitch_values)), 4),
             "std": round(float(np.std(pitch_values)), 4),
             "min": round(float(np.min(pitch_values)), 4),
@@ -77,81 +103,67 @@ class DefectClassifier:
             "count": len(pitch_values)
         }
 
-        # bent pin detection — 角度归一化+基于中位数的异常检测
+    # 将角度归一化到 0~90 度范围，避免正负方向导致误判
+    def _normalize_angle(self, angle):
+        normalized = angle % 180
+        return normalized if normalized <= 90 else 180 - normalized
+
+    # 检测哪些引脚角度明显偏离主流方向，判定为弯曲
+    def _detect_bent_pins(self, result, pins):
+        if not pins or len(pins) < 2:
+            return False
+
+        raw_angles = [p.angle for p in pins]
+        norm_angles = [self._normalize_angle(a) for a in raw_angles]
+        median_angle = float(np.median(norm_angles))
+        result.angle_stats = {
+            "mean": round(float(np.mean(raw_angles)), 2),
+            "std": round(float(np.std(raw_angles)), 2),
+            "min": round(float(np.min(raw_angles)), 2),
+            "max": round(float(np.max(raw_angles)), 2),
+            "dominant": round(median_angle, 2),
+        }
+
         has_bent = False
-        if pins and len(pins) >= 2:
-            raw_angles = [p.angle for p in pins]
-            # 归一化所有角度到 [0, 90]，解决 -90/90 环绕问题
-            # 归一化后：0=水平, 90=竖直
-            norm_angles = []
-            for a in raw_angles:
-                n = a % 180
-                if n > 90:
-                    n = 180 - n
-                norm_angles.append(n)
-            # 以中位数为主方向（稳健，不受少数异常影响）
-            median_angle = float(np.median(norm_angles))
-            result.angle_stats = {
-                "mean": round(float(np.mean(raw_angles)), 2),
-                "std": round(float(np.std(raw_angles)), 2),
-                "min": round(float(np.min(raw_angles)), 2),
-                "max": round(float(np.max(raw_angles)), 2),
-                "norm_median": round(median_angle, 2),
-            }
-            for i, p in enumerate(pins):
-                dev_from_major = abs(norm_angles[i] - median_angle)
-                result.pin_angle_details.append(
-                    (p.index, round(raw_angles[i], 2), round(dev_from_major, 2),
-                     dev_from_major > self.bent_angle_threshold)
-                )
-                if dev_from_major > self.bent_angle_threshold:
-                    result.bent_pins.append((p.index, float(raw_angles[i]), median_angle))
-                    has_bent = True
+        for i, p in enumerate(pins):
+            dev = abs(norm_angles[i] - median_angle)
+            if dev > self.bent_angle_threshold:
+                result.bent_pins.append((p.index, float(raw_angles[i]), median_angle))
+                has_bent = True
+        return has_bent
 
-        # missing pin detection
-        has_missing = False
-        missing_idx = self._detect_missing_pins(pitches, result.pitch_stats)
-        if missing_idx:
-            result.missing_pins = missing_idx
-            has_missing = True
-
-        # pitch evaluation
-        if self.nominal_pitch is not None:
-            self._evaluate_pitches(pitches, result)
-        else:
-            result.message = "未设置标称间距，仅输出测量值"
-
-        # overall verdict priority: missing > bent > pitch > OK
+    # 根据缺失、弯曲和间距偏差的优先级，生成最终结论和描述
+    def _build_verdict(self, result, has_missing, has_bent):
         defects_found = [d[2] for d in result.pin_details if d[2] != DefectType.OK]
+
         if has_missing:
-            result.overall_verdict = DefectType.MISSING_PIN
-            result.message = "检测到 " + str(len(result.missing_pins)) + " 处缺引脚"
-        elif has_bent:
-            result.overall_verdict = DefectType.BENT_PIN
-            result.message = "检测到 " + str(len(result.bent_pins)) + " 个弯曲引脚"
-        elif defects_found:
+            return DefectType.MISSING_PIN, "检测到 " + str(len(result.missing_pins)) + " 处缺引脚"
+        if has_bent:
+            return DefectType.BENT_PIN, "检测到 " + str(len(result.bent_pins)) + " 个弯曲引脚"
+        if defects_found:
             wide = sum(1 for d in defects_found if d == DefectType.PITCH_TOO_WIDE)
             narrow = sum(1 for d in defects_found if d == DefectType.PITCH_TOO_NARROW)
             parts = []
-            if wide: parts.append(str(wide) + "处偏大")
-            if narrow: parts.append(str(narrow) + "处偏小")
+            if wide:
+                parts.append(str(wide) + "处偏大")
+            if narrow:
+                parts.append(str(narrow) + "处偏小")
             max_dev = max((d[4] for d in result.pin_details if d[2] != DefectType.OK), default=0)
-            if wide >= narrow:
-                result.overall_verdict = DefectType.PITCH_TOO_WIDE
-            else:
-                result.overall_verdict = DefectType.PITCH_TOO_NARROW
-            result.message = "间距超差（" + "、".join(parts) + "），最大偏差 " + format(max_dev, ".4f") + "mm"
-        else:
-            if not result.message:
-                result.message = "所有引脚间距在公差范围内"
+            verdict = DefectType.PITCH_TOO_WIDE if wide >= narrow else DefectType.PITCH_TOO_NARROW
+            message = "间距超差（" + "、".join(parts) + "），最大偏差 " + format(max_dev, ".4f") + "mm"
+            return verdict, message
+        if result.message:
+            return result.overall_verdict, result.message
+        return DefectType.OK, "所有引脚间距在公差范围内"
 
-        # defect counts
+    # 将各类缺陷的详细结果汇总成计数表，便于输出和统计
+    def _update_defect_counts(self, result):
         for d in result.pin_details:
             result.defect_counts[d[2]] = result.defect_counts.get(d[2], 0) + 1
         result.defect_counts["缺引脚"] = len(result.missing_pins)
         result.defect_counts["引脚弯曲"] = len(result.bent_pins)
-        return result
 
+    # 检测是否存在引脚缺失，按间距异常倍数与行内中位数判断
     def _detect_missing_pins(self, pitches, stats=None):
         # 基于行内中位数的局部异常检测
         if not pitches:
@@ -186,7 +198,6 @@ class DefectClassifier:
                 continue
 
             threshold = median_pitch * self.missing_pin_ratio
-            # 超过30%间距都显著偏大(>中位数x1.3) => 整体标定问题
             above_count = sum(1 for v in row_mm if v > median_pitch * 1.4)
             is_calibration_error = above_count > len(row_mm) * 0.5
 
@@ -195,39 +206,33 @@ class DefectClassifier:
                     missing.append(start + j)
 
         return missing
-        row_boundaries.append(len(pitches))
-        missing = []
-        for ri in range(len(row_boundaries) - 1):
-            start = row_boundaries[ri]
-            end = row_boundaries[ri + 1]
-            row_pitches = pitches[start:end]
-            if len(row_pitches) < 3:
-                continue
-            row_mm = [p[3] for p in row_pitches]
-            median_pitch = float(np.median(row_mm))
-            if median_pitch <= 0:
-                continue
-            threshold = median_pitch * self.missing_pin_ratio
-            above_count = sum(1 for v in row_mm if v > median_pitch * 1.3)
-            is_calibration_error = above_count > len(row_mm) * 0.3
-            for j, p in enumerate(row_pitches):
-                if p[3] > threshold and not is_calibration_error:
-                    missing.append(start + j)
-        return missing
-    def _cluster_rows(self, pins):
-        y_coords = np.array([p.center[1] for p in pins])
+
+    # 按 Y 坐标间隙把引脚分成多行，适配双排或多排器件
+    def _cluster_rows(self, pins, gap_threshold: int = 80):
+        """按 Y 坐标间隙把引脚分成多行（每一行一组）。"""
+        if not pins:
+            return {}
+
         if len(pins) < 4:
             return {0: pins}
-        mean_y = float(np.mean(y_coords))
-        rows = {0: [], 1: []}
-        for p in pins:
-            rows[0 if p.center[1] <= mean_y else 1].append(p)
-        for rid in rows:
-            rows[rid].sort(key=lambda p: p.center[0])
-            for j, p in enumerate(rows[rid]):
-                p.index = j + 1
-        return rows
 
+        sorted_pins = sorted(pins, key=lambda p: p.center[1])
+        rows = []
+
+        for pin in sorted_pins:
+            if rows and abs(pin.center[1] - rows[-1][0].center[1]) <= gap_threshold:
+                rows[-1].append(pin)
+            else:
+                rows.append([pin])
+
+        for row in rows:
+            row.sort(key=lambda p: p.center[0])
+            for j, p in enumerate(row):
+                p.index = j + 1
+
+        return {rid: row for rid, row in enumerate(rows)}
+
+    # 按标称间距评估每个引脚间距是否偏大或偏小
     def _evaluate_pitches(self, pitches, result):
         for p in pitches:
             p1, p2, dist_px, dist_mm = p
@@ -237,3 +242,4 @@ class DefectClassifier:
                 result.pin_details.append((p1, p2, dt, dist_mm, deviation))
             else:
                 result.pin_details.append((p1, p2, DefectType.OK, dist_mm, deviation))
+
