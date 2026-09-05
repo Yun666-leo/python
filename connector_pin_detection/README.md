@@ -78,8 +78,5 @@ python main.py
 - Python 3.8+
 - OpenCV 4.9+
 - NumPy
-- SciPy
 - PyYAML
 - Pillow
-- Matplotlib
-- scikit-image
