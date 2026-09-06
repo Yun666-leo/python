@@ -1,4 +1,4 @@
-﻿"""预处理模块 - 图像去噪、增强、二值化"""
+"""预处理模块 - 图像去噪、增强、二值化"""
 import cv2
 import numpy as np
 
@@ -10,41 +10,17 @@ class Preprocessor:
     def __init__(self, config: dict = None):
         self.config = config or {}
 
-    # 执行通用的图像预处理流程。
-    def process(self, image: np.ndarray) -> np.ndarray:
-        gray = self._to_grayscale(image)
-        denoised = self._denoise(gray)
-        enhanced = self._enhance_contrast(denoised)
-        binary = self._binarize(enhanced, invert=True)
-        cleaned = self._morphological_clean(binary)
-        return cleaned
-
     # 执行引脚检测专用的图像预处理流程。
-    def process_for_pins(self, image: np.ndarray) -> np.ndarray:
-        """引脚检测专用预处理管线：垂直 std 剖面定位行 → crop 顶部 90px → 各行纯 Otsu
+    def process_for_pins(self, image: np.ndarray, bands: list = None) -> tuple:
+        """引脚检测专用预处理管线：垂直 std 剖面定位行 → crop 顶部 70px → 各行纯 Otsu
         → 垂直闭合(3,9) 连接同列断裂 → OPEN(3,3)×2 → CLOSE(3,3)×1。"""
-        denoised =self.image_handle(image)
-        row_bands, _ = self._find_pin_rows(denoised)
-        result=self.process_for_pins_with_bands(image,row_bands)
-        return result
-
-    # 计算图像中的引脚行带及其标准差曲线。
-    def _compute_row_bands(self, image: np.ndarray) -> tuple:
-        """从图像计算行带和平滑标准差（std_smooth）曲线。
-返回值 (bands, std_smooth)，其中 std_smooth 是用于 _validate_bands 的峰值标准差过滤的平滑标准差曲线。
-        """
-        denoised =self.image_handle(image)
-        bands, std_smooth = self._find_pin_rows(denoised)
-        return bands, std_smooth
-
-    # 根据配置过滤二值图像中的引脚轮廓。
-    @staticmethod
-    def _filter_pins_from_binary(binary, config):
-        """使用 PinDetector 配置从二值图像中过滤引脚轮廓。"""
-        from src.image_processing.pin_detection import PinDetector
-        contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        det = PinDetector(config)
-        return det._filter_pins(contours)
+        denoised = self.image_handle(image)
+        if bands is None:
+            bands, std_smooth = self._find_pin_rows(denoised)
+        else:
+            std_smooth = None
+        binary = self.process_for_pins_with_bands(image, bands)
+        return binary, bands, std_smooth
 
     # 使用指定的行带处理图像并提取引脚区域。
     def process_for_pins_with_bands(self, image: np.ndarray, bands: list) -> np.ndarray:
@@ -79,7 +55,7 @@ class Preprocessor:
     def _find_pin_rows(self, image: np.ndarray, max_rows: int = 2) -> tuple:
         h, w = image.shape
         if h < 30:
-            return []
+            return [],np.array([])
         half_w = 2
         std_profile = np.zeros(h)
         for y in range(half_w, h - half_w):
@@ -105,7 +81,7 @@ class Preprocessor:
             else:
                 i += 1
         if not regions:
-            return []
+            return [],std_smooth
         regions.sort(key=lambda r: r[2], reverse=True)
         regions = regions[:max_rows]
         regions.sort(key=lambda r: r[0])
@@ -115,14 +91,11 @@ class Preprocessor:
     # 对图像进行灰度化、暗图增强和中值去噪。
     def image_handle(self,image: np.ndarray) -> np.ndarray:
         gray = self._to_grayscale(image)
+        gray=self._denoise(gray)
         # 自适应：暗图（mean < 60）用 CLAHE 增强对比度以改善引脚检测
         if gray.mean() < 60:
-            clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-            gray = clahe.apply(gray)
-        strength = self.config.get("denoise_strength", 3)
-        if strength % 2 == 0:
-            strength += 1
-        denoised = cv2.medianBlur(gray, strength)
+            gray=self._enhance_contrast(gray)
+        denoised=self._denoise(gray)
         return denoised
 
     # 将彩色图像转换为灰度图像。
@@ -169,12 +142,13 @@ class Preprocessor:
         opened = cv2.morphologyEx(binary, cv2.MORPH_OPEN, kernel, iterations=1)
         closed = cv2.morphologyEx(opened, cv2.MORPH_CLOSE, kernel, iterations=1)
         return closed
-
-    # 从预处理结果中提取符合面积范围的引脚轮廓。
-    def extract_pin_region(self, image: np.ndarray) -> list:
-        binary = self.process(image)
+    
+ # 根据配置过滤二值图像中的引脚轮廓。
+    @staticmethod
+    def _filter_pins_from_binary(binary, config):
+        """使用 PinDetector 配置从二值图像中过滤引脚轮廓。"""
+        from src.image_processing.pin_detection import PinDetector
         contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        min_area = self.config.get("min_pin_area", 20)
-        max_area = self.config.get("max_pin_area", 5000)
-        return [c for c in contours if min_area < cv2.contourArea(c) < max_area]
-   
+        det = PinDetector(config)
+        return det._filter_pins(contours)
+

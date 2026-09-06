@@ -1,4 +1,4 @@
-﻿"""应用主控协调器"""
+"""应用主控协调器"""
 import os, cv2, numpy as np
 from src.image_processing.preprocess import Preprocessor
 from src.image_processing.pin_detection import PinDetector
@@ -148,12 +148,15 @@ class AppController:
             return None
         image = self.current_image
 
-        # Compute row bands and validate them
-        bands, std_smooth = self.preprocessor._compute_row_bands(image)
-        filtered = self.preprocessor._filter_pins_from_binary(self.preprocessor.process_for_pins(image), self.config.raw.get("pin_detection", {}))
+        # Generate an initial binary image, then validate its candidate bands.
+        binary, bands, std_smooth = self.preprocessor.process_for_pins(image)
+        filtered = self.preprocessor._filter_pins_from_binary(
+            binary,
+            self.config.raw.get("pin_detection", {})
+        )
         valid_bands = self.detector._validate_bands(filtered, bands, std_smooth)
-        # Recompute binary using only valid bands
-        binary_for_pins = self.preprocessor.process_for_pins_with_bands(image, valid_bands)
+        # Reprocess using only the validated bands.
+        binary_for_pins, _, _ = self.preprocessor.process_for_pins(image, valid_bands)
         det_result = self.detector.detect(binary_for_pins, image)
 
         if not det_result.success or len(det_result.pins) < 2:
@@ -161,27 +164,18 @@ class AppController:
             self._build_report()
             return None
 
-        # ROI提取
-        roi_img, _, _ = self.roi_extractor.extract(image, image)
-        if roi_img is not None:
-            binary_for_roi = self.preprocessor.process_for_pins(roi_img)
-            roi_det = self.detector.detect(binary_for_roi, roi_img)
-            if roi_det.success:
-                # Re-validate bands against ROI result to filter noise rows
-                roi_bands, roi_std_smooth = self.preprocessor._compute_row_bands(roi_img)
-                roi_filtered = self.preprocessor._filter_pins_from_binary(binary_for_roi, self.config.raw.get(b"pin_detection", {}))
-                roi_valid_bands = self.detector._validate_bands(roi_filtered, roi_bands, roi_std_smooth)
-                if len(roi_valid_bands) < len(roi_bands):
-                    # Some bands were filtered out, re-detect with valid bands
-                    binary_for_roi2 = self.preprocessor.process_for_pins_with_bands(roi_img, roi_valid_bands)
-                    roi_det = self.detector.detect(binary_for_roi2, roi_img)
-                det_result = roi_det
+        # ROI extraction (kept for future use; direct path is primary)
+        roi_img, _, _ = self.roi_extractor.extract(
+            binary, image)
+        # Note: ROI path is not used to override det_result here because
+        # _compute_row_bands on pre-processed binary produces incorrect bands.
+        # The direct path (above) already handles validation correctly.
 
         # 恢复索引 -> 间距计算 -> 分类 -> 标注
         self._restore_pin_indices(det_result.pins)
         self.pitches = self._calculate_row_pitches(det_result.pins)
         cls_result = self.classifier.classify(self.pitches, det_result.pins)
-        self._restore_pin_indices(det_result.pins)  # classify 内部会改索引，恢复之
+        self._restore_pin_indices(det_result.pins)
 
         self.result_image = self.detector.draw_pins(self.current_image, det_result)
         self._annotate_result(self.result_image, det_result.pins, cls_result)
