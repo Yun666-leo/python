@@ -111,8 +111,8 @@ class Preprocessor:
         if strength % 2 == 0:
             strength += 1
         median = cv2.medianBlur(image, strength)
-        gaussian = cv2.GaussianBlur(median, (strength, strength), 0)
-        return gaussian
+        # gaussian = cv2.GaussianBlur(median, (strength, strength), 0)
+        return median
 
     # 使用 CLAHE 方法增强图像局部对比度。
     def _enhance_contrast(self, image: np.ndarray) -> np.ndarray:
