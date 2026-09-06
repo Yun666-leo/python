@@ -90,13 +90,16 @@ class Preprocessor:
     
     # 对图像进行灰度化、暗图增强和中值去噪。
     def image_handle(self,image: np.ndarray) -> np.ndarray:
-        gray = self._to_grayscale(image)
-        gray=self._denoise(gray)
-        # 自适应：暗图（mean < 60）用 CLAHE 增强对比度以改善引脚检测
-        if gray.mean() < 60:
-            gray=self._enhance_contrast(gray)
-        denoised=self._denoise(gray)
-        return denoised
+           gray = self._to_grayscale(image)
+           # 自适应：暗图（mean < 60）用 CLAHE 增强对比度以改善引脚检测
+           if gray.mean() < 60:
+               clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+               gray = clahe.apply(gray)
+           strength = self.config.get("denoise_strength", 3)
+           if strength % 2 == 0:
+               strength += 1
+           denoised = cv2.medianBlur(gray, strength)
+           return denoised
 
     # 将彩色图像转换为灰度图像。
     @staticmethod
