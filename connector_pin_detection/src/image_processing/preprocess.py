@@ -76,7 +76,7 @@ class Preprocessor:
         return cleaned
 
     # 根据垂直标准差曲线定位引脚所在的行带。
-    def _find_pin_rows(self, image: np.ndarray, max_rows: int = 2) -> list:
+    def _find_pin_rows(self, image: np.ndarray, max_rows: int = 2) -> tuple:
         h, w = image.shape
         if h < 30:
             return []
