@@ -1,4 +1,4 @@
-﻿"""引脚检测模块"""
+"""引脚检测模块"""
 import cv2
 import numpy as np
 from dataclasses import dataclass, field
@@ -142,7 +142,8 @@ class PinDetector:
     def _merge_vertical(self, pins: list) -> list:
         if len(pins) < 3:
             return pins
-        groups = self._split_by_y_gap(pins)
+        merge_y_gap = int(self.config.get("merge_y_gap", 140))
+        groups = self._split_by_y_gap(pins, gap_threshold=merge_y_gap)
         all_merged = []
         for group in groups:
             all_merged.extend(self._merge_group(group))
@@ -187,7 +188,9 @@ class PinDetector:
                 other = group[j]
                 dx = abs(current.center[0] - other.center[0])
                 dy = abs(current.center[1] - other.center[1])
-                avg_h = (current.height + other.height) / 2
+                current_bbox_height = current.bbox[3]
+                other_bbox_height = other.bbox[3]
+                avg_h = (current_bbox_height + other_bbox_height) / 2
                 gap = dy - avg_h
 
                 if dx < 20 and gap < 50:

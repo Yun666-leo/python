@@ -9,16 +9,21 @@ image_processing:
   adaptive_block_size: 11
   adaptive_c: 2
   morph_kernel_size: 3
+  pin_row_white_ratio: 0.05
+  pin_row_white_min: 20
+  pin_row_min_height: 8
+  pin_row_margin: 12
+  pin_component_min_area: 20
 pin_detection:
   min_pin_area: 100
-  max_pin_area: 2000
+  max_pin_area: 6000
   aspect_ratio_min: 1.0
-  aspect_ratio_max: 8.0
-  solidity_min: 0.6
+  aspect_ratio_max: 15.0
+  solidity_min: 0.5
 roi_extraction:
   roi_padding: 20
 calibration:
-  pixel_per_mm: 0.048077
+  pixel_per_mm: 0.047468
   known_length_mm: null
   known_length_px: null
 measurement:

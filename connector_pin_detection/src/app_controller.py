@@ -149,12 +149,12 @@ class AppController:
         image = self.current_image
 
         # Generate an initial binary image, then validate its candidate bands.
-        binary, bands, std_smooth = self.preprocessor.process_for_pins(image)
+        binary, bands, row_white = self.preprocessor.process_for_pins(image)
         filtered = self.preprocessor._filter_pins_from_binary(
             binary,
             self.config.raw.get("pin_detection", {})
         )
-        valid_bands = self.detector._validate_bands(filtered, bands, std_smooth)
+        valid_bands = self.detector._validate_bands(filtered, bands, row_white)
         # Reprocess using only the validated bands.
         binary_for_pins, _, _ = self.preprocessor.process_for_pins(image, valid_bands)
         det_result = self.detector.detect(binary_for_pins, image)
