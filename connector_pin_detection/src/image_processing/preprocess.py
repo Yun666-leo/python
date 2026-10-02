@@ -20,14 +20,19 @@ class Preprocessor:
         return cleaned
 
     # 执行引脚检测专用的图像预处理流程。
-    def process_for_pins(self, image: np.ndarray, bands: list = None) -> tuple:
-        """先生成干净二值图，再按逐行白像素数量定位并细化引脚行带。"""
-        binary = self._prepare_pin_binary(image)
+    def process_for_pins(self, image: np.ndarray, bands: list = None,
+                         prepared_binary: np.ndarray = None) -> tuple:
+        """先生成干净二值图，再按逐行白像素数量定位并细化引脚行带。
+
+        prepared_binary 可传入同一帧已算好的二值图（_prepare_pin_binary 的输出），
+        避免同一张图在一帧内被重复预处理；此时后续步骤也无需再做二值判定。
+        """
+        binary = self._prepare_pin_binary(image) if prepared_binary is None else prepared_binary
         if bands is None:
-            bands, row_white = self._find_pin_rows(binary)
+            bands, row_white = self._find_pin_rows(binary, is_binary=True)
         else:
             row_white = None
-        binary = self.process_for_pins_with_bands(binary, bands)
+        binary = self.process_for_pins_with_bands(binary, bands, is_binary=True)
         return binary, bands, row_white
 
     # 根据配置过滤二值图像中的引脚轮廓。
@@ -40,9 +45,10 @@ class Preprocessor:
         return det._filter_pins(contours)
 
     # 使用指定的行带处理图像并提取引脚区域。
-    def process_for_pins_with_bands(self, image: np.ndarray, bands: list) -> np.ndarray:
+    def process_for_pins_with_bands(self, image: np.ndarray, bands: list,
+                                    is_binary: bool = False) -> np.ndarray:
         """只保留指定行带，并通过局部开闭运算和连通域面积去除噪点。"""
-        binary = self._as_binary(image)
+        binary = self._as_binary(image, is_binary)
         if len(bands) == 0:
             return self._clean_binary(binary)
 
@@ -86,7 +92,11 @@ class Preprocessor:
         return cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel)
 
     @staticmethod
-    def _as_binary(image: np.ndarray) -> np.ndarray:
+    def _as_binary(image: np.ndarray, is_binary: bool = False) -> np.ndarray:
+        if is_binary:
+            # 调用方（process_for_pins）已保证这是 _prepare_pin_binary 产出的
+            # 0/255 uint8 二值图；直接返回可省掉 np.unique + np.where 两次全图扫描。
+            return image
         if image.dtype == np.uint8 and len(np.unique(image)) <= 2:
             return np.where(image > 0, 255, 0).astype(np.uint8)
         gray = image if len(image.shape) == 2 else cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
@@ -100,8 +110,9 @@ class Preprocessor:
         return cv2.morphologyEx(opened, cv2.MORPH_CLOSE, kernel, iterations=1)
 
     # 根据每行白像素数量定位引脚所在的行带。
-    def _find_pin_rows(self, image: np.ndarray, max_rows: int = 2) -> list:
-        binary = self._as_binary(image)
+    def _find_pin_rows(self, image: np.ndarray, max_rows: int = 2,
+                       is_binary: bool = False) -> list:
+        binary = self._as_binary(image, is_binary)
         h, w = binary.shape
         if h < 30 or w == 0:
             return [], np.zeros(h, dtype=np.int32)
